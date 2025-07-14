@@ -60,3 +60,4 @@ media/
 
 # Documentation build files
 docs/_build/
+.env/
