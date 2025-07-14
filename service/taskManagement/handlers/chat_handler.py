@@ -1,4 +1,4 @@
-# handlers/chat_handler.py
+# THIS is chathandlers /chat_handler.py
 from fastapi import Request, UploadFile
 from fastapi.responses import JSONResponse
 from models.schemas import ChatResponse
@@ -6,7 +6,7 @@ from utils.state import *
 from utils.ticket import handle_ticket_flow
 from handlers.greeting import handle_greeting
 from handlers.attachment_handler import handle_attachment
-
+import re
 
 async def handle_chat(request: Request, user_input: str, file: UploadFile = None) -> JSONResponse:
     convo_id = get_conversation_id(request)
