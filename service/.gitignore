@@ -1,0 +1,62 @@
+# Python-specific ignores
+*.pyc
+_pycache_/
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+*.egg-info/
+dist/
+build/
+*.whl
+pip-log.txt
+pip-delete-this-directory.txt
+
+# FastAPI-specific ignoresg
+*.log
+logs/
+*.pid
+
+# Environment variables
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Dependency directories
+site-packages/
+node_modules/  # If using Node.js for frontend or other purposes
+
+# Testing and coverage
+.coverage
+coverage.xml
+*.cover
+*.py,cover
+.pytest_cache/
+htmlcov/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Database files (if applicable)
+*.db
+*.sqlite3
+
+# Static files and media (if applicable)
+staticfiles/
+media/
+
+# Documentation build files
+docs/_build/
