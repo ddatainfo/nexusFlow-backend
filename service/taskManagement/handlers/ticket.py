@@ -1,3 +1,5 @@
+import asyncio
+from uuid import uuid4
 from utils.llm import call_mistral
 from utils.extractor import extract_fields, is_title_too_vague
 from agents.ticket_analysis import TicketAnalysisAgent
@@ -81,12 +83,14 @@ async def handle_ticket_fields(user_input: str, state: dict, conversation: list,
             return state["conversation"][-1]["content"]
 
         priority_prompt = (
-            f'The user described the issue as: "{user_input.strip()}".\n'
-            "Ask them to choose a priority: Low, Medium, or High.\n"
-            "Only one sentence.\n"
-            "No explanation of what priority means.\n"
-            "No greetings or sign-offs.\n"
-            "Example: 'What is the priority of this issue? (Low, Medium, or High)'"
+            "Ask the user to choose a priority level for this issue.\n"
+            "Respond ONLY in this exact format using line breaks and tags:\n"
+            "What is the priority of this issue?\n"
+            "b$low$b\n"
+            "b$medium$b\n"
+            "b$high$b\n"
+            "DO NOT include descriptions, explanations, or any other text."
+            "DO NOT include greetings, sign-offs, or examples."
         )
         response = call_mistral(priority_prompt)
         state["awaiting_priority"] = True
@@ -129,5 +133,58 @@ async def handle_ticket_fields(user_input: str, state: dict, conversation: list,
         result = analysis_agent.analyze_ticket()
         state["awaiting_ticket_confirmation"] = True
         return state["conversation"][-1]["content"]
+
+    # Check for missing fields and prompt for the first one
+    for field in ["title", "description", "priority"]:
+        if not state["fields"].get(field):
+            state[f"awaiting_{field}"] = True
+
+            if field == "title":
+                mistral_prompt = (
+                    "The user has not provided the issue title yet.\n"
+                    "Ask them to provide a clear and specific title.\n"
+                    "Only respond with a single, polite sentence asking for the title.\n"
+                    "No greetings, no sign-offs.\n"
+                    "Example: 'Could you please provide the title of the issue you’re facing?'"
+                )
+
+            elif field == "description":
+                mistral_prompt = (
+                    f'The user already gave this title: "{state["fields"]["title"]}".\n'
+                    "Ask them to describe the issue clearly in one sentence.\n"
+                    "Avoid greetings or explanations.\n"
+                    "Example: 'Could you describe the issue in more detail?'"
+                )
+
+            elif field == "priority":
+                mistral_prompt = (
+                    "Ask the user to choose a priority level for this issue.\n"
+                    "Respond ONLY in this exact format using line breaks and tags:\n"
+                    "What is the priority of this issue?\n"
+                    "b$low$b\n"
+                    "b$medium$b\n"
+                    "b$high$b\n"
+                    "DO NOT include descriptions, explanations, or any other text."
+                    "DO NOT include greetings, sign-offs, or examples."
+                )
+
+            prompt = call_mistral(mistral_prompt).strip()
+
+            # Safety fallback if Mistral fails or returns junk
+            if not prompt or any(bad in prompt.lower() for bad in ["dear", "regards", "thank", "hope"]):
+                prompt = {
+                    "title": "Could you please provide the title of the issue you’re facing?",
+                    "description": "Could you describe the issue in more detail?",
+                    "priority": "\n".join([
+                        "What is the priority of this issue?",
+                        "b$low$b",
+                        "b$medium$b",
+                        "b$high$b"
+                    ])
+                }[field]
+
+            conversation.append({"role": "assistant", "content": prompt})
+            print(f"Starlistant: {prompt}")
+            return prompt
 
     return None

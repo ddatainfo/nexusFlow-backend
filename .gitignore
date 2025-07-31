@@ -16,7 +16,7 @@ build/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# FastAPI-specific ignores
+# FastAPI-specific ignoresg
 *.log
 logs/
 *.pid
@@ -60,4 +60,5 @@ media/
 
 # Documentation build files
 docs/_build/
-.env/
+service/taskManagement/uploads/
+service/taskManagement/services/uploads/

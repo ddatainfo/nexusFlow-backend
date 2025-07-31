@@ -102,6 +102,8 @@ def chat_with_knowledge(query, id):
     print("Query received", query)
     if is_greeting(query):
         return {"response": "Hi there! How can I assist you today?"}
+
+    # chANGE THE INIT TO TOP
     client = PersistentClient(path=CHROMA_DB_DIR)
     coll = client.get_collection(COLLECTION_NAME)
     # Embed query
@@ -139,6 +141,8 @@ def chat_with_knowledge(query, id):
             t = meta.get("type", "text")
             grouped[t].append((doc, meta))
         # Get last 5 chat history for this conversation
+        # changr the import statements
+        # check the state of conversation
         from conversation_state import conversation_states
         state = conversation_states.get(id, {})
         chat_history = state.get("chat_history", [])
@@ -158,6 +162,7 @@ def chat_with_knowledge(query, id):
             response_text = response["message"]["content"].strip()
             print("Mistral response:", response_text)
             # Update chat history
+            # move to up
             from conversation_state import update_chat_history
             update_chat_history(id, query, response_text)
             return {"response": response_text}

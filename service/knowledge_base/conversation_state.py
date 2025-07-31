@@ -40,6 +40,8 @@ def save_conversation_state():
         logger.error(f"Failed to save conversation state: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to save conversation state: {str(e)}")
 
+
+# change the dicttinory structure
 def init_conversation_state(conversation_id: str):
     conversation_states[conversation_id] = {
         "context_history": [],

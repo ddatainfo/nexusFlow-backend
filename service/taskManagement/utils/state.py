@@ -34,3 +34,8 @@ def get_conversation_id(request: Request) -> str:
         convo_id = str(uuid.uuid4())
         print(f"🆕 New session started: {convo_id}")
     return convo_id
+
+# added to save the details in mongo db
+def persist_conversation(convo_id: str, state: dict):
+    save_conversation_state()
+    save_conversation_to_db(convo_id, state)
