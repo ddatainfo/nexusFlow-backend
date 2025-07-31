@@ -20,7 +20,7 @@ async def handle_attachment(user_input: str, file: Optional[UploadFile], state: 
         if cleaned_input in ["yes", "y", "ok", "sure"]:
             state["awaiting_attachment_confirmation"] = False
             state["awaiting_file_upload"] = True
-            response = "📎 Great! Please upload a file or paste a link to proceed. b$upload$b"
+            response = "📎 Great! Please upload a file or paste a link to proceed. $upload$"
             conversation.append({"role": "assistant", "content": response})
             persist_conversation(convo_id, state)
             return JSONResponse(content=ChatResponse(convo_id=convo_id, response=response).dict())
@@ -30,9 +30,9 @@ async def handle_attachment(user_input: str, file: Optional[UploadFile], state: 
             try:
                 ticket_key, ticket_url = create_jira_ticket(state["fields"], attachment=None)
                 response = (
-                    f"✅ Ticket created without attachment.\n"
-                    f"🎫 Ticket Key: {ticket_key}\n"
-                    f"🔗 Link: {ticket_url}"
+                    f"✅ Ticket created without attachment.<br/>"
+                    f"🎫 Ticket Key: {ticket_key}<br/>"
+                    f"🔗 Link: <a href='{ticket_url}' target='_blank'>{ticket_url}</a>"
                 ) if ticket_key else "❌ Ticket creation failed."
 
             except Exception as e:
@@ -97,9 +97,9 @@ async def handle_attachment(user_input: str, file: Optional[UploadFile], state: 
                 attach_note = ""
 
             response = (
-                f"✅ Ticket created successfully!\n"
-                f"🎫 Ticket Key: {ticket_key}\n"
-                f"🔗 Link: {ticket_url}\n"
+                f"✅ Ticket created successfully!<br/>"
+                f"🎫 Ticket Key: {ticket_key}<br/>"
+                f"🔗 Link: <a href='{ticket_url}' target='_blank'>{ticket_url}</a><br/>"
                 f"{attach_note}"
             ) if ticket_key else "❌ Ticket creation failed."
 

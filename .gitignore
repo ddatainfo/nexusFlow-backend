@@ -62,3 +62,4 @@ media/
 docs/_build/
 service/taskManagement/uploads/
 service/taskManagement/services/uploads/
+service/rag_env

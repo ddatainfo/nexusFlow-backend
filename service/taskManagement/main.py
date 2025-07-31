@@ -233,9 +233,9 @@ async def chat(
             init_conversation(convo_id)
             state = conversation_states[convo_id]
             response = (
-                "Sure! You're back at the start.\n\n"
-                "Please choose one:\n\n"
-                "b$task_management$b Create a new ticket\n"
+                "Sure! You're back at the start.<br/><br/>"
+                "Please choose one:<br/>"
+                "b$task_management$b Create a new ticket<br/>"
                 "b$knowledge_base$b Search the knowledge base"
             )
             state["awaiting_initial_choice"] = True
@@ -260,7 +260,7 @@ async def chat(
 
             # Append fallback hint to guide the user
             kb_response += (
-                "\n\n_(\nYou can type 'b$go back$b' to return to menu, or 'b$create a ticket$b' to switch flows.)_"
+                "<br/><br/>You can type b$go back$b to return to menu  OR  b$create a ticket$b to switch flows."
             )
 
             conversation.append({"role": "assistant", "content": kb_response})
@@ -362,7 +362,8 @@ async def upload_attachment(
                     status_code=200,
                     content={
                         #"convo_id": convo_id,
-                        "response": f"✅ Ticket created successfully!\n🎫 Ticket Key: {ticket_key}\n🔗 Link: {ticket_url}\n📎 Attachment uploaded: {file.filename}"
+                        "response": f"✅ Ticket created successfully!<br/>🎫 Ticket Key: {ticket_key}<br/>🔗 Link: <a href='{ticket_url}' target='_blank'>{ticket_url}</a><br/>📎 Attachment uploaded: {file.filename}"
+
                     }
                 )
             else:
