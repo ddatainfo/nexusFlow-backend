@@ -51,7 +51,33 @@ async def chat(
     convo_id = request.cookies.get("convo_id")
     logger.info(f"📬 Request headers: {request.headers}")
     print("-------------------------------------------------------")
-    logger.info(f"Received convo_id: {convo_id}") 
+    logger.info(f"Received convo_id: {convo_id}")
+
+    # Check if current conversation is completed (ticket created successfully)
+    if convo_id and convo_id in conversation_states:
+        current_state = conversation_states[convo_id]
+        if current_state.get("ticket_created_successfully"):
+            logger.info(f"🎯 Ticket completed, creating new conversation for user input: {user_input}")
+            # Clear the old conversation and create new one
+            conversation_states.pop(convo_id, None)
+            new_convo_id = str(uuid.uuid4())
+            init_conversation(new_convo_id)
+            state = conversation_states[new_convo_id]  # Update state to new conversation
+            
+            response = (
+                "Hi there! 👋 Would you like to proceed?<br/><br/>"
+                "Please choose one:<br/><br/>"
+                "b$task_management$b Create a new ticket or search in ticket<br/>"
+                "b$knowledge_base$b Search the knowledge base"
+            )
+            state["awaiting_initial_choice"] = True
+            state["conversation"].append({"role": "user", "content": user_input})  # Add user input to new conversation
+            state["conversation"].append({"role": "assistant", "content": response})
+            persist_conversation(new_convo_id, state)
+            
+            res = JSONResponse(content=ChatResponse(convo_id=new_convo_id, response=response).dict())
+            res.set_cookie("convo_id", new_convo_id)
+            return res 
 
     if not convo_id or convo_id not in conversation_states:
         convo_id = str(uuid.uuid4())
@@ -77,8 +103,11 @@ async def chat(
     state = conversation_states[convo_id]
     conversation = state["conversation"]
 
+    # Add user input to conversation early
+    conversation.append({"role": "user", "content": user_input})
+
     # Greet and ask user for their goal if it's a fresh conversation
-    if not conversation:
+    if not conversation or len(conversation) <= 1:
         response = (
             "Hi there! 👋 Would you like to proceed?\n\n"
             "Please choose one:\n\n"
@@ -115,18 +144,15 @@ async def chat(
         res.set_cookie("convo_id", convo_id)
         return res
 
-    # Handle greeting
-    if handle_greeting(user_input, state, conversation):
-        response = conversation[-1]["content"]
-        #save_conversation_state()
-        persist_conversation(convo_id, state) # to save the state in mongodb
-        res = JSONResponse(content=ChatResponse(convo_id=convo_id, response=response).dict())
-        res.set_cookie("convo_id", convo_id)
-        return res
-
-    # # Add user input to conversation
-    # conversation.append({"role": "user", "content": user_input})
-    # #save_conversation_state()
+    # PRIORITY: Handle attachment confirmation BEFORE greeting
+    if state.get("awaiting_attachment_confirmation") or state.get("awaiting_file_upload"):
+        logger.info(f"🔄 Processing attachment flow for input: {user_input}")
+        response = await handle_attachment(user_input, None, state, conversation, convo_id)
+        print(f"user input: {user_input}")
+        if response:
+            return response
+        else:
+            logger.warning("handle_attachment returned None but state was still awaiting attachment")
 
     # Handle ticket creation confirmation
     if state.get("awaiting_ticket_confirmation"):
@@ -148,10 +174,10 @@ async def chat(
         elif cleaned_input in ["no"]:
             state["awaiting_ticket_confirmation"] = False
             response = (
-                "Okay, I won't create a ticket.\n\n"
-                "Would you like to proceed?\n\n"
-                "Please choose one:\n\n"
-                "b$task_management$b Create a new ticket\n"
+                "Okay, I won't create a ticket.<br/><br/>"
+                "Would you like to proceed?  "
+                "Please choose one:<br/><br/>"
+                "b$task_management$b Create a new ticket<br/>"
                 "b$knowledge_base$b Search the knowledge base"
             )
             logger.info(f"Starlistant: {response}")
@@ -167,20 +193,14 @@ async def chat(
             res.set_cookie("convo_id", new_convo_id)
             return res
 
-    # Add user input to conversation
-    conversation.append({"role": "user", "content": user_input})
-    #save_conversation_state()
-    persist_conversation(convo_id, state)  # to save the state in mongodb
-
-    # Handle attachment confirmation or upload
-    if state.get("awaiting_attachment_confirmation") or state.get("awaiting_file_upload"):
-        #response = await handle_attachment(user_input, file, state, conversation, convo_id)
-        response = await handle_attachment(user_input, None, state, conversation, convo_id)
-        print(f"user input: {user_input}")
-        if response:
-            return response
-        else:
-            logger.warning("handle_attachment returned None but state was still awaiting attachment")
+    # Handle greeting - but check in ALL flows to prevent greeting from being processed as input
+    if handle_greeting(user_input, state, conversation):
+        response = conversation[-1]["content"]
+        logger.info(f"🎯 Greeting detected and handled: {user_input}")
+        persist_conversation(convo_id, state) # to save the state in mongodb
+        res = JSONResponse(content=ChatResponse(convo_id=convo_id, response=response).dict())
+        res.set_cookie("convo_id", convo_id)
+        return res
 
     # Ticket Flow Handling
     if state.get("ticket_flow_started"):
@@ -212,7 +232,7 @@ async def chat(
                 "Do NOT suggest or generate any title yourself.\n"
                 "Only respond with one polite question asking the user to provide the title.\n"
                 "Keep it short and professional.\n"
-                "Example: 'Could you please provide the title of the issue you’re facing?'"
+                "Example: 'Could you please provide the title of the issue you're facing?'"
             )
             response = call_mistral(clarification_prompt)
             conversation.append({"role": "assistant", "content": response})
@@ -358,11 +378,15 @@ async def upload_attachment(
             ticket_url = state.get("ticket_url")
 
             if ticket_key and ticket_url:
+                # Mark conversation as completed
+                state["ticket_created_successfully"] = True
+                persist_conversation(convo_id, state)
+                
                 return JSONResponse(
                     status_code=200,
                     content={
                         #"convo_id": convo_id,
-                        "response": f"✅ Ticket created successfully!<br/>🎫 Ticket Key: {ticket_key}<br/>🔗 Link: <a href='{ticket_url}' target='_blank'>{ticket_url}</a><br/>📎 Attachment uploaded: {file.filename}"
+                        "response": f"✅ Ticket created successfully!<br/>🎫 Ticket Key: {ticket_key}<br/>🔗 Link: <a href='{ticket_url}' target='_blank'>{ticket_url}</a><br/>📎 Attachment uploaded: {file.filename}<br/><br/>🔄 You can now start a new conversation!"
 
                     }
                 )

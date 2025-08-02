@@ -32,15 +32,21 @@ async def handle_attachment(user_input: str, file: Optional[UploadFile], state: 
                 response = (
                     f"✅ Ticket created without attachment.<br/>"
                     f"🎫 Ticket Key: {ticket_key}<br/>"
-                    f"🔗 Link: <a href='{ticket_url}' target='_blank'>{ticket_url}</a>"
+                    f"🔗 Link: <a href='{ticket_url}' target='_blank'>{ticket_url}</a><br/><br/>"
+                    f"🔄 You can now start a new conversation!"
                 ) if ticket_key else "❌ Ticket creation failed."
+
+                # Mark conversation as completed for auto-reset
+                if ticket_key:
+                    state["ticket_created_successfully"] = True
+                    logger.info(f"✅ Ticket created successfully without attachment: {ticket_key}")
 
             except Exception as e:
                 logger.error(f"❌ Ticket creation failed without attachment: {str(e)}")
                 response = "❌ Ticket creation failed. Please try again later."
 
             conversation.append({"role": "assistant", "content": response})
-            conversation_states.pop(convo_id, None)
+            persist_conversation(convo_id, state)
             return JSONResponse(content=ChatResponse(convo_id=convo_id, response=response).dict())
 
     # Step 2: Handle file upload
@@ -100,8 +106,14 @@ async def handle_attachment(user_input: str, file: Optional[UploadFile], state: 
                 f"✅ Ticket created successfully!<br/>"
                 f"🎫 Ticket Key: {ticket_key}<br/>"
                 f"🔗 Link: <a href='{ticket_url}' target='_blank'>{ticket_url}</a><br/>"
-                f"{attach_note}"
+                f"{attach_note}<br/><br/>"
+                f"🔄 You can now start a new conversation!"
             ) if ticket_key else "❌ Ticket creation failed."
+
+            # Mark conversation as completed for auto-reset
+            if ticket_key:
+                state["ticket_created_successfully"] = True
+                logger.info(f"✅ Ticket created successfully with attachment: {ticket_key}")
 
             # Clean up
             state.update({

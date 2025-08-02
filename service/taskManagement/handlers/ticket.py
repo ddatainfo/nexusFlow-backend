@@ -50,14 +50,20 @@ async def handle_ticket_fields(user_input: str, state: dict, conversation: list,
         state["awaiting_title"] = False
 
         if not state["fields"].get("description"):
+            # FIXED: Instead of generating a description, ask the user for details - CRISP VERSION
             description_prompt = (
-                f'The user gave this issue title: "{title_candidate}".\n'
-                "Ask the user to describe the issue clearly.\n"
-                "One sentence only.\n"
-                "No greetings, examples, or sign-offs.\n"
-                "Example: 'Could you describe the issue in more detail?'"
+                f'The user provided the title: "{title_candidate}".\n'
+                "Ask them for more details about this issue in ONE short sentence. "
+                "Keep it brief and direct. "
+                "Example: 'Please describe what exactly happens.'\n"
+                "Respond with ONE short sentence only."
             )
             response = call_mistral(description_prompt)
+            
+            # Fallback if Mistral fails - CRISP VERSION
+            if not response or any(bad in response.lower() for bad in ["dear", "regards", "hope this"]) or len(response) > 80:
+                response = "Please describe what exactly happens."
+            
             state["awaiting_description"] = True
             conversation.append({"role": "assistant", "content": response})
             print(f"Starlistant: {response}")
@@ -99,6 +105,10 @@ async def handle_ticket_fields(user_input: str, state: dict, conversation: list,
         return response
 
     if state.get("awaiting_priority"):
+        # Normalize button input like b$low$b
+        if user_input.startswith("b$") and user_input.endswith("$b"):
+            user_input = user_input[2:-2].strip()
+
         priority = user_input.strip().capitalize()
         if priority not in ["Low", "Medium", "High"]:
             response = "Priority must be Low, Medium, or High. Please enter a valid priority."
@@ -145,15 +155,17 @@ async def handle_ticket_fields(user_input: str, state: dict, conversation: list,
                     "Ask them to provide a clear and specific title.\n"
                     "Only respond with a single, polite sentence asking for the title.\n"
                     "No greetings, no sign-offs.\n"
-                    "Example: 'Could you please provide the title of the issue you’re facing?'"
+                    "Example: 'Could you please provide the title of the issue you're facing?'"
                 )
 
             elif field == "description":
+                # FIXED: Ask for more details instead of restating the problem - CRISP VERSION
                 mistral_prompt = (
-                    f'The user already gave this title: "{state["fields"]["title"]}".\n'
-                    "Ask them to describe the issue clearly in one sentence.\n"
-                    "Avoid greetings or explanations.\n"
-                    "Example: 'Could you describe the issue in more detail?'"
+                    f'The user already provided this title: "{state["fields"]["title"]}".\n'
+                    "Ask them for more details about this issue in ONE short sentence. "
+                    "Keep it brief and direct. "
+                    "Example: 'Please describe what exactly happens.'\n"
+                    "Respond with ONE short sentence only."
                 )
 
             elif field == "priority":
@@ -173,8 +185,8 @@ async def handle_ticket_fields(user_input: str, state: dict, conversation: list,
             # Safety fallback if Mistral fails or returns junk
             if not prompt or any(bad in prompt.lower() for bad in ["dear", "regards", "thank", "hope"]):
                 prompt = {
-                    "title": "Could you please provide the title of the issue you’re facing?",
-                    "description": "Could you describe the issue in more detail?",
+                    "title": "Could you please provide the title of the issue you're facing?",
+                    "description": "Please describe what exactly happens.",
                     "priority": "\n".join([
                         "What is the priority of this issue?",
                         "b$low$b",
