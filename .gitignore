@@ -63,3 +63,5 @@ docs/_build/
 service/taskManagement/uploads/
 service/taskManagement/services/uploads/
 service/rag_env
+service/rag_workspace
+service/knowledge_base/conversation_state.pkl

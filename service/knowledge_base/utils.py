@@ -5,7 +5,7 @@ from embedding_model import get_embedder
 from pathlib import Path
 from fastapi import HTTPException
 
-WORK_ROOT = Path("/home/ddata/work/nantha/chatbot_api/pdf_service/rag_workspace")
+WORK_ROOT = Path("/home/ddata/dev/nexusFlow-backend/service/rag_workspace")
 CHROMA_DB_DIR = str(WORK_ROOT / "dev_chromadb")
 COLLECTION_NAME = "dev_embeddings"
 SIMILARITY_THRESHOLD = 0.35

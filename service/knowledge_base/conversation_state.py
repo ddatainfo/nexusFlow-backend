@@ -7,7 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-CONVERSATION_STATE_FILE = "/home/ddata/Interns_work/AI_chatbot/chatbot/dev_conversation_state.pkl"
+CONVERSATION_STATE_FILE = "/home/ddata/dev/nexusFlow-backend/service/knowledge_base/conversation_state.pkl"
 
 # Global state storage for multiple conversations
 conversation_states = {}

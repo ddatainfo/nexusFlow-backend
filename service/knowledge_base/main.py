@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
-WORK_ROOT = Path("/home/ddata/work/nantha/chatbot_api/pdf_service/rag_workspace")
-CONVERSATION_STATE_FILE = "/home/ddata/Interns_work/AI_chatbot/chatbot/dev_conversation_state.pkl"
+WORK_ROOT = Path("/home/ddata/dev/nexusFlow-backend/service/rag_workspace")
+CONVERSATION_STATE_FILE = "/home/ddata/dev/nexusFlow-backend/service/knowledge_base/conversation_state.pkl"
 
 UPLOAD_DIR = WORK_ROOT / "uploads"
 ASSET_DIR = WORK_ROOT / "assets"
