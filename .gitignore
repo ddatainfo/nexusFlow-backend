@@ -65,3 +65,10 @@ service/taskManagement/services/uploads/
 service/rag_env
 service/rag_workspace
 service/knowledge_base/conversation_state.pkl
+service/task_retrival/__pycache__
+service/task_retrival/app/__pycache__
+service/task_retrival/app/config/__pycache__
+service/task_retrival/app/models/__pycache__
+service/task_retrival/app/routes/__pycache__
+service/task_retrival/app/schemas/__pycache__
+service/task_retrival/app/services/__pycache__

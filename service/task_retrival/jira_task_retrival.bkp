@@ -1,0 +1,480 @@
+import os
+import json
+import logging
+import re
+from datetime import datetime, timedelta
+from typing import Optional, List
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from dotenv import load_dotenv
+import requests
+
+# ----- Configure logging -----
+logging.basicConfig(
+    level=logging.DEBUG,  # Change to INFO for less verbosity
+    format='%(asctime)s │ %(levelname)s │ %(name)s │ %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+)
+logger = logging.getLogger(__name__)
+
+# ----- Environment & Constants -----
+load_dotenv()
+
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", 3306)
+DB_NAME = os.getenv("DB_NAME")
+
+DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+logger.debug(f"Database URL: {DATABASE_URL}")
+
+# Ollama Mistral API settings
+OLLAMA_BASE_URL = "http://localhost:11434/api/generate"
+MODEL_NAME = "mistral"
+
+def call_mistral(prompt: str, retries: int = 3, timeout: int = 60) -> str:
+    """
+    Calls the local Mistral LLM via Ollama API with retry logic.
+    Returns the raw response (expected as a JSON string).
+    """
+    for attempt in range(retries):
+        try:
+            res = requests.post(
+                OLLAMA_BASE_URL,
+                json={
+                    "model": MODEL_NAME,
+                    "prompt": prompt,
+                    "stream": False,
+                    "temperature": 0.3,
+                    "top_p": 0.8,
+                    "repeat_penalty": 1.2,
+                },
+                timeout=timeout,
+            )
+            res.raise_for_status()
+            response = res.json().get("response", "").strip()
+            logger.debug(f"Mistral raw response: {response}")
+            return response
+        except Exception as e:
+            logger.error(f"❌ Mistral call failed (attempt {attempt + 1}/{retries}): {e}")
+            if attempt == retries - 1:
+                logger.error("All retries failed, returning empty string")
+                return ""
+            time.sleep(2)  # Wait before retrying
+    return ""
+
+# ----- JSON Extraction Helper -----
+def extract_json_from_response(response: str, user_input: str) -> dict:
+    """
+    Extracts the first valid { ... } block from response as JSON.
+    Falls back to inferring parameters from response or input if JSON is invalid.
+    """
+    if not response:
+        logger.error("LLM response is empty, inferring from input")
+        return infer_params_from_input(user_input)
+
+    # Try to find a JSON block using regex
+    match = re.search(r'\{[\s\S]*?\}', response)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON extraction failed: {e}")
+
+    # Fallback: infer parameters from response or input
+    logger.warning("No valid JSON found, inferring parameters")
+    return infer_params_from_input(user_input)
+
+def infer_params_from_input(user_input: str) -> dict:
+    """
+    Infers username, status, and dates from user input when LLM response is invalid.
+    """
+    parsed = {"username": "", "status": "", "from_date": "", "to_date": ""}
+    today = datetime.utcnow().date()
+    yesterday = today - timedelta(days=1)
+
+    # Infer username
+    username_match = re.search(r'\bDhanushKanna(?:\s+G)?\b', user_input, re.IGNORECASE)
+    if username_match:
+        parsed["username"] = "DhanushKanna"
+
+    # Infer status
+    valid_statuses = {"done", "completed", "pending", "open", "in progress", "to do"}
+    for status in valid_statuses:
+        if status.lower() in user_input.lower():
+            parsed["status"] = status
+            break
+
+    # Infer dates
+    if "today" in user_input.lower():
+        parsed["from_date"] = today.strftime("%Y-%m-%d")
+        parsed["to_date"] = today.strftime("%Y-%m-%d")
+    elif "yesterday" in user_input.lower():
+        parsed["from_date"] = yesterday.strftime("%Y-%m-%d")
+        parsed["to_date"] = yesterday.strftime("%Y-%m-%d")
+    else:
+        # Look for date range (e.g., "from 2025-07-01 to 2025-08-07")
+        range_match = re.search(r'from\s+(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})', user_input, re.IGNORECASE)
+        if range_match:
+            parsed["from_date"] = range_match.group(1)
+            parsed["to_date"] = range_match.group(2)
+        else:
+            # Look for single date (e.g., "2025-08-06" or "0205-08-06")
+            date_match = re.search(r'\b(\d{4}|\d{2,4}-\d{2}-\d{2})\b', user_input)
+            if date_match:
+                date_str = date_match.group(0)
+                if date_str.startswith("0") and len(date_str.split("-")[0]) == 4:
+                    date_str = "2" + date_str[1:]
+                parsed["from_date"] = date_str
+                parsed["to_date"] = date_str
+
+    return parsed
+
+# ----- Database Setup -----
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+Base = declarative_base()
+
+# ----- ORM Model -----
+class JiraCredential(Base):
+    __tablename__ = "Credentials"
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String)
+    app_name = Column(String)
+    app_domain = Column(String)
+    app_project_key = Column(String)
+    app_username = Column(String)
+    app_token = Column(String)
+    user_id = Column(Integer)
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime)
+
+# ----- Pydantic Models -----
+class JiraTaskItem(BaseModel):
+    key: str
+    summary: Optional[str]
+    status: Optional[str]
+    created: Optional[str]
+
+class JiraTaskListResponse(BaseModel):
+    tasks: List[JiraTaskItem]
+
+class ChatRequest(BaseModel):
+    user_input: str
+    user_id: Optional[int] = 7
+
+# ----- FastAPI App -----
+app = FastAPI(title="Jira Chat & Task Retrieval Service")
+
+# ----- Helper Functions -----
+def get_jira_details(user_id: int):
+    logger.debug(f"Fetching Jira credentials for user_id={user_id}")
+    session: Session = SessionLocal()
+    try:
+        record = session.query(JiraCredential).filter(JiraCredential.user_id == user_id).first()
+        if not record:
+            logger.error(f"No Jira credentials found for user_id={user_id}")
+            raise HTTPException(status_code=404, detail=f"No Jira credentials for user_id={user_id}")
+        logger.debug(f"Credentials found: username={record.app_username}, domain={record.app_domain}")
+        return {
+            "jira_email": record.app_username,
+            "jira_domain": record.app_domain,
+            "jira_project_key": record.app_project_key,
+            "jira_api_token": record.app_token,
+        }
+    finally:
+        session.close()
+
+def get_account_id_from_name(creds, user_name: str) -> Optional[str]:
+    logger.debug(f"Searching Jira accountId for user_name='{user_name}' on domain '{creds['jira_domain']}'")
+    url = f"https://{creds['jira_domain']}/rest/api/3/user/search"
+    auth = (creds['jira_email'], creds['jira_api_token'])
+    params = {"query": user_name, "maxResults": 1}
+    resp = requests.get(url, auth=auth, params=params)
+    logger.debug(f"User search response status: {resp.status_code}")
+    if resp.status_code != 200:
+        logger.error(f"Failed to fetch accountId from Jira: {resp.text}")
+        raise HTTPException(status_code=resp.status_code, detail="Failed to fetch accountId from Jira")
+    users = resp.json()
+    if not users:
+        logger.warning(f"No users found in Jira search for '{user_name}'")
+        return None
+    account_id = users[0].get('accountId')
+    logger.debug(f"Found accountId: {account_id} for user_name='{user_name}'")
+    return account_id
+
+def run_jira_jql(creds, jql: str, fields: str = "summary,status,created") -> List[dict]:
+    logger.debug(f"Running JQL query: {jql}")
+    url = f"https://{creds['jira_domain']}/rest/api/3/search"
+    auth = (creds['jira_email'], creds['jira_api_token'])
+    params = {"jql": jql, "fields": fields, "maxResults": 50}
+    resp = requests.get(url, auth=auth, params=params)
+    logger.debug(f"Jira search response status: {resp.status_code}")
+    if resp.status_code != 200:
+        logger.error(f"Jira search failed: {resp.text}")
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    issues = resp.json().get("issues", [])
+    logger.debug(f"Number of issues returned: {len(issues)}")
+    return issues
+
+def query_tasks_by_username(creds, username: str):
+    logger.debug(f"Querying tasks assigned to username='{username}'")
+    account_id = get_account_id_from_name(creds, username)
+    if not account_id:
+        logger.error(f"User '{username}' not found in Jira")
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found in Jira")
+    jql = f'project = {creds["jira_project_key"]} AND assignee = "{account_id}" ORDER BY created DESC'
+    return run_jira_jql(creds, jql)
+
+def query_tasks_by_date_and_optional_username(creds, from_date: str, to_date: str, username: Optional[str] = None):
+    logger.debug(f"Querying tasks from_date='{from_date}', to_date='{to_date}', username='{username}'")
+    try:
+        if from_date:
+            datetime.strptime(from_date, "%Y-%m-%d")
+        if to_date:
+            datetime.strptime(to_date, "%Y-%m-%d")
+    except ValueError:
+        logger.error("Invalid date format. Use YYYY-MM-DD")
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    jql_filters = [f'project = {creds["jira_project_key"]}']
+    if from_date:
+        jql_filters.append(f'created >= "{from_date} 00:00"')
+    if to_date:
+        jql_filters.append(f'created <= "{to_date} 23:59"')
+
+    if username:
+        account_id = get_account_id_from_name(creds, username)
+        if not account_id:
+            logger.error(f"User '{username}' not found in Jira")
+            raise HTTPException(status_code=404, detail=f"User '{username}' not found in Jira")
+        jql_filters.append(f'assignee = "{account_id}"')
+
+    jql = " AND ".join(jql_filters) + " ORDER BY created DESC"
+    return run_jira_jql(creds, jql)
+
+def query_tasks_by_status_and_optional_username(creds, status: str, username: Optional[str] = None):
+    logger.debug(f"Querying tasks by status='{status}', username='{username}'")
+    status_lower = status.lower()
+    jql_filters = [f'project = {creds["jira_project_key"]}']
+    if status_lower in ["done", "completed"]:
+        jql_filters.append('status = "Done"')
+    elif status_lower in ["pending", "open", "to do", "in progress"]:
+        jql_filters.append('status IN ("To Do", "In Progress")')
+    else:
+        jql_filters.append(f'status = "{status}"')
+
+    if username:
+        account_id = get_account_id_from_name(creds, username)
+        if not account_id:
+            logger.error(f"User '{username}' not found in Jira")
+            raise HTTPException(status_code=404, detail=f"User '{username}' not found in Jira")
+        jql_filters.append(f'assignee = "{account_id}"')
+
+    jql = " AND ".join(jql_filters) + " ORDER BY created DESC"
+    return run_jira_jql(creds, jql)
+
+def resolve_special_dates(from_date_str: str, to_date_str: str):
+    """Normalize 'today', 'yesterday' to actual dates, handle missing one date as single day."""
+    today = datetime.utcnow().date()
+    from_lower = (from_date_str or "").lower()
+    to_lower = (to_date_str or "").lower()
+
+    if from_lower == "today" or to_lower == "today":
+        day_str = today.strftime("%Y-%m-%d")
+        return day_str, day_str
+    if from_lower == "yesterday" or to_lower == "yesterday":
+        yesterday = today - timedelta(days=1)
+        day_str = yesterday.strftime("%Y-%m-%d")
+        return day_str, day_str
+    if from_date_str and not to_date_str:
+        return from_date_str, from_date_str
+    if to_date_str and not from_date_str:
+        return to_date_str, to_date_str
+    return from_date_str, to_date_str
+
+def parse_jira_query_with_mistral(user_input: str):
+    today = datetime.utcnow().date()
+    yesterday = today - timedelta(days=1)
+    prompt = f'''
+Extract the following fields from this Jira query in natural English: username, status, from_date, to_date.
+
+User query: "{user_input}"
+
+Rules:
+- Username: Extract the username as a single string, removing extra spaces or initials (e.g., "DhanushKanna G" becomes "DhanushKanna"). If no username is specified, return an empty string.
+- Status: Only extract a status if it is explicitly one of: "done", "completed", "pending", "open", "in progress", "to do". Ignore generic terms like "task", "tasks", or "issues". If no valid status is specified, return an empty string.
+- Dates:
+  - If "today" is mentioned, set both from_date and to_date to "{today.strftime('%Y-%m-%d')}".
+  - If "yesterday" is mentioned, set both from_date and to_date to "{yesterday.strftime('%Y-%m-%d')}".
+  - If a specific date is mentioned (e.g., "2025-08-06" or "on 2025-08-06"), set both from_date and to_date to that date unless a range is explicitly provided.
+  - If a date range is mentioned with "from ... to ..." (e.g., "from 2025-07-01 to 2025-08-07"), set from_date to the first date and to_date to the second date.
+  - For dates with ambiguous years (e.g., "0205-08-06"), interpret as "2025" (assume years in 2000–2099).
+  - Validate dates to ensure they are in "YYYY-MM-DD" format and plausible (between 2010 and 2030). If invalid, set both dates to empty strings.
+  - If no dates are specified, return empty strings for both from_date and to_date.
+- Output: Return ONLY a single valid JSON object with the fields username, status, from_date, and to_date. Do NOT include explanations, code blocks, Markdown, or any text outside the JSON object. Non-compliance will result in parsing errors.
+
+Example inputs and expected outputs:
+- Input: "DhanushKanna G tasks today"
+  Output: {{"username": "DhanushKanna", "status": "", "from_date": "{today.strftime('%Y-%m-%d')}", "to_date": "{today.strftime('%Y-%m-%d')}"}}
+- Input: "DhanushKanna G pending task on 2025-08-06"
+  Output: {{"username": "DhanushKanna", "status": "pending", "from_date": "2025-08-06", "to_date": "2025-08-06"}}
+- Input: "DhanushKanna G tasks from 2025-07-01 to 2025-08-07"
+  Output: {{"username": "DhanushKanna", "status": "", "from_date": "2025-07-01", "to_date": "2025-08-07"}}
+- Input: "DhanushKanna G task 0205-08-06 In progress"
+  Output: {{"username": "DhanushKanna", "status": "in progress", "from_date": "2025-08-06", "to_date": "2025-08-06"}}
+
+Output format:
+{{
+  "username": "",
+  "status": "",
+  "from_date": "",
+  "to_date": ""
+}}
+'''
+    logger.debug(f"Parsing user input with LLM: {user_input}")
+    response = call_mistral(prompt)
+    logger.debug(f"Raw LLM response: {response}")
+    try:
+        parsed = json.loads(response)
+    except Exception as e:
+        logger.error(f"Failed to parse LLM response: {e}")
+        parsed = extract_json_from_response(response, user_input)
+
+    # Normalize username
+    if parsed.get("username"):
+        parsed["username"] = " ".join(parsed["username"].split()).split()[0]
+
+    # Validate status
+    valid_statuses = {"done", "completed", "pending", "open", "in progress", "to do"}
+    if parsed.get("status", "").lower() not in valid_statuses:
+        parsed["status"] = ""
+
+    # Normalize and validate dates
+    for date_field in ["from_date", "to_date"]:
+        if parsed.get(date_field):
+            date_str = parsed[date_field]
+            if date_str.startswith("0") and len(date_str.split("-")[0]) == 4:
+                date_str = "2" + date_str[1:]
+            try:
+                parsed_date = datetime.strptime(date_str, "%Y-%m-%d")
+                year = parsed_date.year
+                if year < 2010 or year > 2030:
+                    logger.warning(f"Date {date_str} outside valid range (2010–2030), setting to empty")
+                    parsed["from_date"] = ""
+                    parsed["to_date"] = ""
+                    break
+                parsed[date_field] = parsed_date.strftime("%Y-%m-%d")
+            except ValueError:
+                logger.warning(f"Invalid date format: {date_str}, setting to empty")
+                parsed["from_date"] = ""
+                parsed["to_date"] = ""
+                break
+
+    # Ensure from_date <= to_date
+    if parsed.get("from_date") and parsed.get("to_date"):
+        try:
+            from_date = datetime.strptime(parsed["from_date"], "%Y-%m-%d")
+            to_date = datetime.strptime(parsed["to_date"], "%Y-%m-%d")
+            if from_date > to_date:
+                logger.warning(f"from_date {parsed['from_date']} is after to_date {parsed['to_date']}, swapping")
+                parsed["from_date"], parsed["to_date"] = parsed["to_date"], parsed["from_date"]
+        except ValueError:
+            parsed["from_date"] = ""
+            parsed["to_date"] = ""
+    elif parsed.get("from_date") and not parsed.get("to_date"):
+        parsed["to_date"] = parsed["from_date"]
+    elif parsed.get("to_date") and not parsed.get("from_date"):
+        parsed["from_date"] = parsed["to_date"]
+
+    return parsed
+
+@app.post("/chat", response_model=JiraTaskListResponse)
+def chat_endpoint(chat_req: ChatRequest):
+    logger.info(f"Received chat request: user_input='{chat_req.user_input}', user_id={chat_req.user_id}")
+    user_input = chat_req.user_input
+    user_id = chat_req.user_id or 7
+
+    params = parse_jira_query_with_mistral(user_input)
+    username = params.get("username", "").strip()
+    status = params.get("status", "").strip()
+    from_date = params.get("from_date", "").strip()
+    to_date = params.get("to_date", "").strip()
+
+    from_date, to_date = resolve_special_dates(from_date, to_date)
+
+    # If no parameters are extracted, raise an error instead of defaulting to all tasks
+    if not username and not status and not from_date and not to_date:
+        logger.error("No valid parameters extracted from input, cannot proceed")
+        raise HTTPException(status_code=400, detail="Unable to parse input. Please specify a username, status, or date.")
+
+    creds = get_jira_details(user_id)
+
+    try:
+        if from_date and to_date:
+            logger.info(f"Querying by dates from {from_date} to {to_date}, username={username if username else None}, status={status if status else None}")
+            if status:
+                jql_filters = [
+                    f'project = {creds["jira_project_key"]}',
+                    f'created >= "{from_date} 00:00"',
+                    f'created <= "{to_date} 23:59"'
+                ]
+                if username:
+                    account_id = get_account_id_from_name(creds, username)
+                    if not account_id:
+                        logger.error(f"User '{username}' not found in Jira")
+                        raise HTTPException(status_code=404, detail=f"User '{username}' not found in Jira")
+                    jql_filters.append(f'assignee = "{account_id}"')
+
+                status_lower = status.lower()
+                if status_lower in ["done", "completed"]:
+                    jql_filters.append('status = "Done"')
+                elif status_lower in ["pending", "open", "to do", "in progress"]:
+                    jql_filters.append('status IN ("To Do", "In Progress")')
+                else:
+                    jql_filters.append(f'status = "{status}"')
+
+                jql = " AND ".join(jql_filters) + " ORDER BY created DESC"
+                issues = run_jira_jql(creds, jql)
+            else:
+                issues = query_tasks_by_date_and_optional_username(creds, from_date, to_date, username if username else None)
+
+        elif username and not from_date and not to_date and not status:
+            logger.info(f"Querying tasks by username: {username}")
+            issues = query_tasks_by_username(creds, username)
+
+        elif status:
+            logger.info(f"Querying tasks by status: {status}, username={username if username else None}")
+            issues = query_tasks_by_status_and_optional_username(creds, status, username if username else None)
+
+        else:
+            logger.error("Invalid combination of parameters")
+            raise HTTPException(status_code=400, detail="Invalid query parameters")
+
+    except HTTPException as e:
+        logger.error(f"Query failed with HTTPException: {e.detail}")
+        raise e
+    except Exception as e:
+        logger.error(f"Unexpected error during Jira query: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    logger.info(f"Returning {len(issues)} tasks")
+    tasks = [
+        JiraTaskItem(
+            key=issue["key"],
+            summary=issue["fields"].get("summary"),
+            status=issue["fields"].get("status", {}).get("name"),
+            created=issue["fields"].get("created"),
+        )
+        for issue in issues
+    ]
+
+    return {"tasks": tasks}
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info("Starting Jira Chat & Task Retrieval Service on port 8003")
+    uvicorn.run(app, host="0.0.0.0", port=8003)
