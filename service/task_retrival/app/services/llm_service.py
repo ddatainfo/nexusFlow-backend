@@ -2,6 +2,8 @@ import json
 import re
 from datetime import datetime, timedelta
 import requests
+from typing import Dict
+from dateutil.parser import parse as parse_date
 from app.config.settings import OLLAMA_BASE_URL, MODEL_NAME
 import logging
 import time
@@ -39,7 +41,7 @@ def call_mistral(prompt: str, retries: int = 3, timeout: int = 60) -> str:
             time.sleep(2)  # Wait before retrying
     return ""
 
-def extract_json_from_response(response: str, user_input: str) -> dict:
+def extract_json_from_response(response: str, user_input: str) -> Dict:
     """
     Extracts the first valid { ... } block from response as JSON.
     Falls back to inferring parameters from response or input if JSON is invalid.
@@ -48,122 +50,107 @@ def extract_json_from_response(response: str, user_input: str) -> dict:
         logger.error("LLM response is empty, inferring from input")
         return infer_params_from_input(user_input)
 
-    # Try to find a JSON block using regex
-    match = re.search(r'\{[\s\S]*?\}', response)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON extraction failed: {e}")
+    # Remove ```json, ```, or any narrative text before/after JSON
+    cleaned_response = re.sub(r'```json\s*|\s*```|.*?(\{[\s\S]*?\}).*', r'\1', response, flags=re.DOTALL).strip()
+    try:
+        return json.loads(cleaned_response)
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON extraction failed: {e}")
+        logger.warning("No valid JSON found, inferring parameters")
+        return infer_params_from_input(user_input)
 
-    # Fallback: infer parameters from response or input
-    logger.warning("No valid JSON found, inferring parameters")
-    return infer_params_from_input(user_input)
-
-def infer_params_from_input(user_input: str) -> dict:
+def infer_params_from_input(user_input: str) -> Dict[str, str]:
     """
-    Infers username, status, and dates from user input when LLM response is invalid.
+    Fallback to infer parameters from user input using regex and dateutil.
     """
-    parsed = {"username": "", "status": "", "from_date": "", "to_date": ""}
-    today = datetime.utcnow().date()
-    yesterday = today - timedelta(days=1)
+    username = ""
+    status = ""
+    from_date = ""
+    to_date = ""
 
-    # Infer username (any alphanumeric string, optionally followed by space and initial)
-    username_match = re.search(r'\b([a-zA-Z0-9]+)(?:\s+[a-zA-Z])?\b', user_input, re.IGNORECASE)
+    # Extract username (skip common words)
+    username_match = re.search(r"\b(?!this|last|week|task|tasks|for\b)[A-Za-z][A-Za-z0-9]*\b", user_input, re.IGNORECASE)
     if username_match:
-        parsed["username"] = username_match.group(1)
+        username = username_match.group(0)
 
-    # Infer status
-    valid_statuses = {"done", "completed", "pending", "open", "in progress", "to do"}
-    for status in valid_statuses:
-        if status.lower() in user_input.lower():
-            parsed["status"] = status
-            break
+    # Extract status
+    status_pattern = r'\b(?:in progress|done|completed|pending|open|to do)\b'
+    status_match = re.search(status_pattern, user_input, re.IGNORECASE)
+    if status_match:
+        status = status_match.group(0).lower()
+        if status == "pending":
+            status = "to do"  # Map 'pending' to Jira's 'To Do'
 
-    # Infer dates
-    if "today" in user_input.lower():
-        parsed["from_date"] = today.strftime("%Y-%m-%d")
-        parsed["to_date"] = today.strftime("%Y-%m-%d")
-    elif "yesterday" in user_input.lower():
-        parsed["from_date"] = yesterday.strftime("%Y-%m-%d")
-        parsed["to_date"] = yesterday.strftime("%Y-%m-%d")
-    else:
-        # Look for date range (e.g., "from 2025-07-01 to 2025-08-07")
-        range_match = re.search(r'from\s+(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})', user_input, re.IGNORECASE)
-        if range_match:
-            parsed["from_date"] = range_match.group(1)
-            parsed["to_date"] = range_match.group(2)
-        else:
-            # Look for single date (e.g., "2025-08-06" or "0205-08-06")
-            date_match = re.search(r'\b(\d{4}|\d{2,4}-\d{2}-\d{2})\b', user_input)
-            if date_match:
-                date_str = date_match.group(0)
-                if date_str.startswith("0") and len(date_str.split("-")[0]) == 4:
-                    date_str = "2" + date_str[1:]
-                parsed["from_date"] = date_str
-                parsed["to_date"] = date_str
+    # Extract dates using dateutil
+    date_pattern = r'\b(?:\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4}|today|yesterday|this week|last week)\b'
+    dates = re.findall(date_pattern, user_input, re.IGNORECASE)
+    if dates:
+        try:
+            parsed_date = parse_date(dates[0], dayfirst=True)
+            from_date = parsed_date.strftime("%Y-%m-%d")
+            to_date = from_date if len(dates) == 1 else parse_date(dates[1], dayfirst=True).strftime("%Y-%m-%d")
+        except ValueError:
+            logger.warning(f"Failed to parse dates in input: {user_input}")
 
-    return parsed
+    return {"username": username, "status": status, "from_date": from_date, "to_date": to_date}
 
 def resolve_special_dates(from_date_str: str, to_date_str: str) -> tuple[str, str]:
-    """Normalize 'today', 'yesterday' to actual dates, handle missing one date as single day."""
+    """
+    Normalize special date terms and parsed dates to YYYY-MM-DD format.
+    """
     today = datetime.utcnow().date()
     from_lower = (from_date_str or "").lower()
     to_lower = (to_date_str or "").lower()
 
-    if from_lower == "today" or to_lower == "today":
+    if from_lower in ["today"] or to_lower in ["today"]:
         day_str = today.strftime("%Y-%m-%d")
         return day_str, day_str
-    if from_lower == "yesterday" or to_lower == "yesterday":
+    if from_lower in ["yesterday"] or to_lower in ["yesterday"]:
         yesterday = today - timedelta(days=1)
         day_str = yesterday.strftime("%Y-%m-%d")
         return day_str, day_str
-    if from_date_str and not to_date_str:
-        return from_date_str, from_date_str
-    if to_date_str and not from_date_str:
-        return to_date_str, to_date_str
-    return from_date_str, to_date_str
+    if from_lower in ["this week", "last week"] or to_lower in ["this week", "last week"]:
+        week_start = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+        week_end = today.strftime("%Y-%m-%d")
+        return week_start, week_end
 
-def parse_jira_query_with_mistral(user_input: str) -> dict:
-    today = datetime.utcnow().date()
-    yesterday = today - timedelta(days=1)
-    prompt = f'''
-Extract the following fields from this Jira query in natural English: username, status, from_date, to_date.
+    # Parse dates with dateutil
+    try:
+        if from_date_str:
+            from_date = parse_date(from_date_str, dayfirst=True).strftime("%Y-%m-%d")
+        else:
+            from_date = ""
+        if to_date_str:
+            to_date = parse_date(to_date_str, dayfirst=True).strftime("%Y-%m-%d")
+        else:
+            to_date = from_date if from_date else ""
+        return from_date, to_date
+    except ValueError:
+        logger.warning(f"Invalid date format: from_date={from_date_str}, to_date={to_date_str}")
+        return "", ""
 
-User query: "{user_input}"
-
-Rules:
-- Username: Extract the username as a single string, removing extra spaces or initials (e.g., "DhanushKanna G" becomes "DhanushKanna"). If no username is specified, return an empty string.
-- Status: Only extract a status if it is explicitly one of: "done", "completed", "pending", "open", "in progress", "to do". Ignore generic terms like "task", "tasks", or "issues". If no valid status is specified, return an empty string.
-- Dates:
-  - If "today" is mentioned, set both from_date and to_date to "{today.strftime('%Y-%m-%d')}".
-  - If "yesterday" is mentioned, set both from_date and to_date to "{yesterday.strftime('%Y-%m-%d')}".
-  - If a specific date is mentioned (e.g., "2025-08-06" or "on 2025-08-06"), set both from_date and to_date to that date unless a range is explicitly provided.
-  - If a date range is mentioned with "from ... to ..." (e.g., "from 2025-07-01 to 2025-08-07"), set from_date to the first date and to_date to the second date.
-  - For dates with ambiguous years (e.g., "0205-08-06"), interpret as "2025" (assume years in 2000–2099).
-  - Validate dates to ensure they are in "YYYY-MM-DD" format and plausible (between 2010 and 2030). If invalid, set both dates to empty strings.
-  - If no dates are specified, return empty strings for both from_date and to_date.
-- Output: Return ONLY a single valid JSON object with the fields username, status, from_date, and to_date. Do NOT include explanations, code blocks, Markdown, or any text outside the JSON object. Non-compliance will result in parsing errors.
-
-Example inputs and expected outputs:
-- Input: "DhanushKanna G tasks today"
-  Output: {{"username": "DhanushKanna", "status": "", "from_date": "{today.strftime('%Y-%m-%d')}", "to_date": "{today.strftime('%Y-%m-%d')}"}}
-- Input: "DhanushKanna G pending task on 2025-08-06"
-  Output: {{"username": "DhanushKanna", "status": "pending", "from_date": "2025-08-06", "to_date": "2025-08-06"}}
-- Input: "DhanushKanna G tasks from 2025-07-01 to 2025-08-07"
-  Output: {{"username": "DhanushKanna", "status": "", "from_date": "2025-07-01", "to_date": "2025-08-07"}}
-- Input: "DhanushKanna G task 0205-08-06 In progress"
-  Output: {{"username": "DhanushKanna", "status": "in progress", "from_date": "2025-08-06", "to_date": "2025-08-06"}}
-
-Output format:
-{{
-  "username": "",
-  "status": "",
-  "from_date": "",
-  "to_date": ""
-}}
-'''
+def parse_jira_query_with_mistral(user_input: str) -> Dict[str, str]:
     logger.debug(f"Parsing user input with LLM: {user_input}")
+    prompt = f"""
+    Return only a JSON object with the following fields extracted from the Jira query. Do not include any additional text, comments, code block markers (like ```json or ```), or explanations. Ensure the response is a single, valid JSON object.
+
+    Fields:
+    - username: The proper noun or alphanumeric string at the start of the query, before 'task'/'tasks', or after prepositions like 'for' (e.g., in 'task for User'), else empty string
+    - status: Task status (e.g., 'in progress', 'done', 'completed', 'pending', 'open', 'to do') if explicitly mentioned, map 'pending' to 'to do', else empty string
+    - from_date: Start date in YYYY-MM-DD format; for relative terms like 'today' use {datetime.now().strftime('%Y-%m-%d')}, 'yesterday' use {(datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')}, 'this week' or 'last week' use {(datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')}, or parse dates like 'DD-MM-YY', 'DD/MM/YYYY', 'Month DD, YYYY' (e.g., 'July 1st, 2025'), else empty string
+    - to_date: End date in YYYY-MM-DD format; for relative terms or parsed dates same as from_date, else empty string
+
+    Query: "{user_input}"
+
+    Example output:
+    {{
+        "username": "",
+        "status": "",
+        "from_date": "",
+        "to_date": ""
+    }}
+    """
+    logger.debug(f"Calling Mistral with prompt: {prompt[:100]}...")
     response = call_mistral(prompt)
     logger.debug(f"Raw LLM response: {response}")
     try:
@@ -172,35 +159,30 @@ Output format:
         logger.error(f"Failed to parse LLM response: {e}")
         parsed = extract_json_from_response(response, user_input)
 
+    # Fallback: Ensure username is extracted if LLM fails
+    if not parsed.get("username"):
+        username_match = re.search(r"\b(?!this|last|week|task|tasks|for\b)[A-Za-z][A-Za-z0-9]*\b", user_input, re.IGNORECASE)
+        if username_match:
+            parsed["username"] = username_match.group(0)
+            logger.debug(f"Fallback extracted username: {parsed['username']}")
+
     # Normalize username
     if parsed.get("username"):
         parsed["username"] = " ".join(parsed["username"].split()).split()[0]
+
+    # Map 'pending' to 'to do'
+    if parsed.get("status", "").lower() == "pending":
+        parsed["status"] = "to do"
 
     # Validate status
     valid_statuses = {"done", "completed", "pending", "open", "in progress", "to do"}
     if parsed.get("status", "").lower() not in valid_statuses:
         parsed["status"] = ""
 
-    # Normalize and validate dates
-    for date_field in ["from_date", "to_date"]:
-        if parsed.get(date_field):
-            date_str = parsed[date_field]
-            if date_str.startswith("0") and len(date_str.split("-")[0]) == 4:
-                date_str = "2" + date_str[1:]
-            try:
-                parsed_date = datetime.strptime(date_str, "%Y-%m-%d")
-                year = parsed_date.year
-                if year < 2010 or year > 2030:
-                    logger.warning(f"Date {date_str} outside valid range (2010–2030), setting to empty")
-                    parsed["from_date"] = ""
-                    parsed["to_date"] = ""
-                    break
-                parsed[date_field] = parsed_date.strftime("%Y-%m-%d")
-            except ValueError:
-                logger.warning(f"Invalid date format: {date_str}, setting to empty")
-                parsed["from_date"] = ""
-                parsed["to_date"] = ""
-                break
+    # Normalize and validate dates with dateutil
+    from_date, to_date = resolve_special_dates(parsed.get("from_date"), parsed.get("to_date"))
+    parsed["from_date"] = from_date
+    parsed["to_date"] = to_date
 
     # Ensure from_date <= to_date
     if parsed.get("from_date") and parsed.get("to_date"):
@@ -213,9 +195,5 @@ Output format:
         except ValueError:
             parsed["from_date"] = ""
             parsed["to_date"] = ""
-    elif parsed.get("from_date") and not parsed.get("to_date"):
-        parsed["to_date"] = parsed["from_date"]
-    elif parsed.get("to_date") and not parsed.get("from_date"):
-        parsed["from_date"] = parsed["to_date"]
 
     return parsed

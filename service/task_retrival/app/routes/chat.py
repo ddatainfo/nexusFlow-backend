@@ -6,6 +6,7 @@ from app.services.jira_service import (
     query_tasks_by_date_and_optional_username,
     query_tasks_by_status_and_optional_username,
     get_account_id_from_name,
+    run_jira_jql,
 )
 from app.services.llm_service import parse_jira_query_with_mistral, resolve_special_dates
 from app.services.database import get_db
