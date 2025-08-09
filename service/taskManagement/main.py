@@ -27,13 +27,13 @@ logging.getLogger("pymongo").setLevel(logging.WARNING)
 
 app = FastAPI(title="JIRA Chatbot API")
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))  # Retry 3 times with 2-second delay
-async def call_knowledge_base(user_input):
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+async def call_knowledge_base(user_input: str, convo_id: str):
     async with httpx.AsyncClient(timeout=30.0) as client:
-        logger.info(f"Sending query to knowledge base: {user_input}")
+        logger.info(f"Sending query to knowledge base: {user_input} (convo_id={convo_id})")
         response = await client.get(
             "http://localhost:8001/chat",
-            params={"user_input": user_input}
+            params={"user_input": user_input, "conversation_id": convo_id}
         )
         response.raise_for_status()
         logger.info(f"Received response from knowledge base: {response.json()}")
@@ -276,7 +276,8 @@ async def chat(
 
         # 👇 Continue KB flow
         try:
-            kb_response = await call_knowledge_base(user_input)
+            #kb_response = await call_knowledge_base(user_input)
+            kb_response = await call_knowledge_base(user_input, convo_id)
 
             # Append fallback hint to guide the user
             kb_response += (

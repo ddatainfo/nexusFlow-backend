@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 import logging
 from conversation_state import get_conversation_id, load_conversation_state
 from utils import chat_with_knowledge
+from typing import Optional
+from datetime import datetime
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -44,9 +46,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# AFTER: allow override via query param or header
+
 @app.get("/chat")
-async def chat(request: Request, user_input: str):
-    conversation_id = get_conversation_id(request)
+async def chat(request: Request, user_input: str, conversation_id: Optional[str] = None):
+    # 1) Prefer explicit conversation_id (from 8008)
+    if conversation_id:
+        from conversation_state import conversation_states, init_conversation_state, save_conversation_state
+        if conversation_id not in conversation_states:
+            init_conversation_state(conversation_id)
+        else:
+            # keep last_updated fresh
+            conversation_states[conversation_id]["last_updated"] = datetime.now()
+            save_conversation_state()
+    else:
+        # 2) Fall back to cookie session for direct browser hits
+        conversation_id = get_conversation_id(request)
+
     response = chat_with_knowledge(user_input, conversation_id)
     return JSONResponse(response)
 
