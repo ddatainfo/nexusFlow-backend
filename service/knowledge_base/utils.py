@@ -8,7 +8,6 @@ from embedding_model import get_embedder
 from pathlib import Path
 from fastapi import HTTPException
 from sentence_transformers import CrossEncoder  # NEW: reranker
-import re
 
 WORK_ROOT = Path("/home/ddata/dev/nexusFlow-backend/service/rag_workspace")
 CHROMA_DB_DIR = str(WORK_ROOT / "dev_chromadb")
@@ -16,7 +15,7 @@ COLLECTION_NAME = "dev_embeddings"
 
 # Retrieval knobs
 INITIAL_K = 20          # pull more for reranking
-CONTEXT_K = 10           # how many to pass to the LLM
+CONTEXT_K = 15           # how many to pass to the LLM
 MAX_SNIPPET_CHARS = 1200  # safety clamp for beautify/LLM
 
 # NEW: lightweight cross-encoder reranker
